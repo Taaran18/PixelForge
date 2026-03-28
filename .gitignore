@@ -1,0 +1,58 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env/
+
+# ── Environment / secrets ─────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.local
+
+# ── Node / Next.js ────────────────────────────────────────────────────────────
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.turbo/
+frontend/.vercel/
+
+# ── Deep-learning model weights ───────────────────────────────────────────────
+# U2-Net and SR models are downloaded at runtime / build time — never commit them
+backend/models/*.pb
+backend/models/*.onnx
+backend/models/*.caffemodel
+backend/models/*.prototxt
+~/.u2net/
+
+# ── OS artefacts ──────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Logs & coverage ───────────────────────────────────────────────────────────
+*.log
+htmlcov/
+.coverage
+.pytest_cache/
+
+# ── Docker ────────────────────────────────────────────────────────────────────
+*.tar

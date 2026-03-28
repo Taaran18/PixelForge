@@ -1,0 +1,20 @@
+# ── Web framework ─────────────────────────────────────────────────────────────
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+python-multipart>=0.0.6
+
+# ── Computer vision ───────────────────────────────────────────────────────────
+# Includes the contrib modules (xphoto, dnn_superres, photo NPR, etc.)
+# IMPORTANT: uninstall conflicting builds first if upgrading:
+#   pip uninstall -y opencv-python opencv-python-headless
+opencv-contrib-python-headless>=4.8.0
+
+# ── Numerics & imaging ────────────────────────────────────────────────────────
+numpy>=1.24.0
+pillow>=10.0.0
+
+# ── Deep-learning background removal ─────────────────────────────────────────
+# U2-Net salient-object segmentation via ONNX Runtime (CPU).
+# [cpu] installs onnxruntime automatically — no GPU required.
+# The U2-Net model (~170 MB) is downloaded to ~/.u2net/ on first use.
+rembg[cpu]>=2.0.50

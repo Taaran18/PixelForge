@@ -1,0 +1,177 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Colour tokens ──────────────────────────────────────────────────────────
+   Light mode is the default. .dark overrides every token.
+   All component classes below consume these vars, so toggling the class on
+   <html> is the only thing needed to switch themes.
+   ─────────────────────────────────────────────────────────────────────────── */
+:root {
+  --bg-base:        #f8fafc;
+  --bg-card:        #ffffff;
+  --bg-elevated:    #f1f5f9;
+  --color-border:   #e2e8f0;
+  --text-primary:   #0f172a;
+  --text-secondary: #334155;
+  --text-muted:     #64748b;
+  --text-subtle:    #94a3b8;
+  --shadow-card:    0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.04);
+  --purple:         #7c3aed;
+  --cyan:           #06b6d4;
+}
+
+.dark {
+  --bg-base:        #0a0a0f;
+  --bg-card:        #12121a;
+  --bg-elevated:    #1a1a26;
+  --color-border:   #2a2a3d;
+  --text-primary:   #e2e8f0;
+  --text-secondary: #cbd5e1;
+  --text-muted:     #94a3b8;
+  --text-subtle:    #475569;
+  --shadow-card:    none;
+}
+
+/* ── Base reset ─────────────────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: var(--bg-base);
+  color: var(--text-primary);
+  font-family: "Inter", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* ── Custom scrollbar ───────────────────────────────────────────────────── */
+::-webkit-scrollbar          { width: 8px; height: 8px; }
+::-webkit-scrollbar-track    { background: var(--bg-card); }
+::-webkit-scrollbar-thumb    { background: var(--color-border); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--purple); }
+
+/* ── Text selection ─────────────────────────────────────────────────────── */
+::selection {
+  background-color: rgba(124, 58, 237, 0.30);
+  color: #fff;
+}
+
+/* ── Component layer ────────────────────────────────────────────────────── */
+@layer components {
+  /* Glass card — background & border come from CSS vars */
+  .glass-card {
+    background: var(--bg-card);
+    border: 1px solid var(--color-border);
+    border-radius: 1rem;
+    box-shadow: var(--shadow-card);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    transition: background 0.3s ease, border-color 0.3s ease;
+  }
+
+  .glass-card-hover {
+    @apply glass-card;
+    transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease;
+  }
+
+  .glass-card-hover:hover {
+    border-color: rgba(124, 58, 237, 0.5);
+    box-shadow: 0 0 28px rgba(124, 58, 237, 0.14);
+    transform: translateY(-2px);
+  }
+
+  /* Active tool card */
+  .tool-card-active {
+    border-color: var(--purple) !important;
+    box-shadow: 0 0 32px rgba(124, 58, 237, 0.22);
+  }
+
+  /* Drag-over highlight */
+  .drop-zone-active {
+    border-color: var(--cyan) !important;
+    background-color: rgba(6, 182, 212, 0.06) !important;
+    box-shadow: 0 0 24px rgba(6, 182, 212, 0.15);
+  }
+
+  /* Gradient text */
+  .gradient-text {
+    background: linear-gradient(135deg, #a855f7 0%, #06b6d4 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Primary CTA button */
+  .btn-primary {
+    @apply relative inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-semibold text-white transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed;
+    background: linear-gradient(135deg, #7c3aed 0%, #06b6d4 100%);
+    box-shadow: 0 0 20px rgba(124, 58, 237, 0.28);
+  }
+
+  .btn-primary:not(:disabled):hover {
+    box-shadow: 0 0 32px rgba(124, 58, 237, 0.46);
+    transform: translateY(-1px);
+  }
+
+  .btn-primary:not(:disabled):active {
+    transform: translateY(0);
+  }
+
+  /* Secondary outline button */
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl font-medium text-sm transition-all duration-200;
+    background: transparent;
+    border: 1px solid var(--color-border);
+    color: var(--text-secondary);
+  }
+
+  .btn-secondary:hover {
+    border-color: rgba(6, 182, 212, 0.5);
+    color: var(--cyan);
+    background: rgba(6, 182, 212, 0.06);
+  }
+
+  /* Icon button (theme toggle etc.) */
+  .btn-icon {
+    @apply inline-flex items-center justify-center rounded-xl transition-all duration-200;
+    background: var(--bg-card);
+    border: 1px solid var(--color-border);
+    color: var(--text-muted);
+  }
+
+  .btn-icon:hover {
+    border-color: rgba(124, 58, 237, 0.5);
+    color: var(--purple);
+  }
+}
+
+/* ── Checkerboard (transparent image preview) ───────────────────────────── */
+.checkerboard {
+  background-image:
+    linear-gradient(45deg, var(--check-a) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--check-a) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--check-a) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--check-a) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0px;
+  background-color: var(--check-b);
+}
+
+:root .checkerboard {
+  --check-a: #d1d5db;
+  --check-b: #e5e7eb;
+}
+
+.dark .checkerboard {
+  --check-a: #2a2a3d;
+  --check-b: #1a1a26;
+}
