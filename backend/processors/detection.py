@@ -91,6 +91,73 @@ class DetectionProcessor:
         score = min(99, max(70, int(70 + len(faces) * 8)))
         return image_io.to_jpeg(result), score
 
+    # ── Object Remover (user-drawn mask → inpaint) ───────────────────────────
+    def remove_object(self, raw: bytes, mask_raw: bytes, radius: int = 12) -> tuple[bytes, int]:
+        img      = image_io.decode(raw)
+        h, w     = img.shape[:2]
+
+        mask_arr = np.frombuffer(mask_raw, np.uint8)
+        mask_dec = cv2.imdecode(mask_arr, cv2.IMREAD_UNCHANGED)
+        if mask_dec is None:
+            return image_io.to_jpeg(img), 95
+
+        # If RGBA use alpha channel as mask, else convert to gray
+        if mask_dec.ndim == 3 and mask_dec.shape[2] == 4:
+            mask_gray = mask_dec[:, :, 3]
+        elif mask_dec.ndim == 3:
+            mask_gray = cv2.cvtColor(mask_dec, cv2.COLOR_BGR2GRAY)
+        else:
+            mask_gray = mask_dec
+
+        if mask_gray.shape[:2] != (h, w):
+            mask_gray = cv2.resize(mask_gray, (w, h), interpolation=cv2.INTER_NEAREST)
+
+        _, mask_bin = cv2.threshold(mask_gray, 50, 255, cv2.THRESH_BINARY)
+
+        if mask_bin.max() == 0:
+            return image_io.to_jpeg(img), 95
+
+        # Dilate slightly to cover brush edges
+        k        = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        mask_bin = cv2.dilate(mask_bin, k, iterations=2)
+
+        result   = cv2.inpaint(img, mask_bin, inpaintRadius=radius, flags=cv2.INPAINT_TELEA)
+        coverage = float((mask_bin > 0).mean())
+        score    = min(99, max(65, int(95 - coverage * 150)))
+        return image_io.to_jpeg(result), score
+
+    # ── Remove People (HOG detector → inpaint) ───────────────────────────────
+    def remove_people(self, raw: bytes) -> tuple[bytes, int]:
+        img  = image_io.decode(raw)
+        h, w = img.shape[:2]
+
+        hog = cv2.HOGDescriptor()
+        hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+
+        boxes, _ = hog.detectMultiScale(
+            img,
+            winStride=(8, 8),
+            padding=(8, 8),
+            scale=1.05,
+        )
+
+        if len(boxes) == 0:
+            return image_io.to_jpeg(img), 60
+
+        mask = np.zeros((h, w), np.uint8)
+        for (x, y, bw, bh) in boxes:
+            pad = int(max(bw, bh) * 0.12)
+            x1 = max(0, x - pad);  y1 = max(0, y - pad)
+            x2 = min(w, x + bw + pad); y2 = min(h, y + bh + pad)
+            mask[y1:y2, x1:x2] = 255
+
+        k    = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+        mask = cv2.dilate(mask, k, iterations=2)
+
+        result = cv2.inpaint(img, mask, inpaintRadius=18, flags=cv2.INPAINT_TELEA)
+        score  = min(99, max(65, int(65 + len(boxes) * 8)))
+        return image_io.to_jpeg(result), score
+
     # ── Portrait Mode ─────────────────────────────────────────────────────────
     def portrait(self, raw: bytes, bg_style: str = "blur") -> tuple[bytes, int]:
         """

@@ -2,22 +2,35 @@
 PixelForge · processors/sketch_cartoon.py
 
 Sketch
-  bilateral pre-smooth → dodge-burn divide → darkness preservation →
-  Canny edge blend → gamma brightening → line sharpening.
+  bilateral pre-smooth → clamped dodge-burn → shadow-layer blend →
+  Canny edge overlay → gamma brightening → line sharpening.
 
-  Key fix: after dodge-burn, dark areas (navy clothing) were becoming
-  medium-grey because gamma < 1 lifts ALL tones uniformly.  We now
-  multiply the dodge-burn result by a "darkness weight" derived from
-  the original luminance so areas that were genuinely dark stay dark,
-  while the light/paper background brightens correctly.
+  Key fixes vs previous version:
+  • dodge result is clamped to [0, 1] BEFORE darkness weight — prevents the
+    metallic / silver-overflow artefact on mid-tone face / hair areas.
+  • SKETCH_DODGE_SIGMA reduced 22 → 15 so the blur doesn't bleed sky brightness
+    over the face region (was collapsing face to uniform grey).
+  • Shadow layer: instead of multiplying by a weight (which left a
+    grey residue), we blend a dark shadow map ADDITIVELY so dark clothing
+    goes genuinely black while the paper background stays white.
+  • Gamma 0.60 → 0.80: less aggressive brightening, avoiding blown-out
+    mid-tones while still making the background paper-white.
 
 Cartoon
-  bilateral colour flatten → median merge → K-means (k=14) quantisation
-  → Canny outlines (lower thresholds: 50/130 capture facial features).
+  bilateral colour flatten → median merge → K-means (k=10) quantisation
+  → Canny outlines (lowered to 30/100 to capture facial features)
+  → post-smoothing bilateral to remove quantisation grain.
 
-  Key fix: sigma was 120 (too aggressive → merged face+hair+glasses into
-  a single blob).  Reduced to 80 with k=14 so skin, hair, and clothing
-  each get their own colour cluster.
+  Key fixes vs previous version:
+  • sigma 80 → 60: bilateral no longer over-smooths the face before K-means,
+    so the face cluster is distinct from clothing.
+  • k=10 (was 14) with 8 attempts: stable convergence every run; skin, sky,
+    white fabric, dark navy, hair, shadow each reliably get their own cluster.
+  • Canny 30/100: catches fine lines around eyes and glasses.
+  • Post-quantisation bilateral: smooths jagged cluster boundaries without
+    destroying the black outlines painted on top.
+  • Saturation boost raised 1.25 → 1.35 since flatter regions now benefit
+    from a slightly stronger colour pop.
 """
 
 import cv2
@@ -64,37 +77,37 @@ class SketchCartoon:
             sigmaColor=SKETCH_BILATERAL_SIGMA,
             sigmaSpace=SKETCH_BILATERAL_SIGMA,
         )
-        gray = cv2.cvtColor(smooth, cv2.COLOR_BGR2GRAY)
+        gray      = cv2.cvtColor(smooth, cv2.COLOR_BGR2GRAY)
         orig_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
         # 2 — Dodge-burn: extract line structure
+        #     Clamp to [0, 1] BEFORE any weighting to prevent metallic overflow
         inv_blurred = cv2.GaussianBlur(255 - gray, (0, 0), sigmaX=SKETCH_DODGE_SIGMA)
-        dodge = cv2.divide(gray, 255 - inv_blurred, scale=256.0).astype(np.float32)
+        denom       = (255 - inv_blurred).astype(np.float32)
+        denom       = np.where(denom < 1.0, 1.0, denom)          # avoid divide-by-zero
+        dodge       = np.clip(gray.astype(np.float32) / denom, 0.0, 1.0)
 
-        # 3 — Darkness preservation: areas originally dark → darker lines on paper
-        #     Without this, uniform dark clothing turns grey after gamma lift.
-        #     Formula: weight = 1 - DARKNESS_W * (orig_luminance / 255)
-        #     → dark pixels (low luminance) → weight near 1.0 (lines preserved)
-        #     → light pixels (high luminance) → weight near (1 - DARKNESS_W) (lines faded)
-        orig_norm    = orig_gray.astype(np.float32) / 255.0
-        dark_weight  = 1.0 - SKETCH_DARKNESS_W * orig_norm
-        dodge        = dodge * dark_weight
+        # 3 — Shadow layer blend: dark areas in original pull the sketch toward black.
+        #     We compute a shadow map from original luminance and subtract it so that
+        #     navy clothing → genuinely dark ink, not metallic grey.
+        #     shadow = DARKNESS_W × (1 − orig_norm)  [dark pixels → large subtraction]
+        orig_norm  = orig_gray.astype(np.float32) / 255.0
+        shadow     = SKETCH_DARKNESS_W * (1.0 - orig_norm)       # 0=light, DARKNESS_W=dark
+        dodge      = np.clip(dodge - shadow, 0.0, 1.0)
 
-        # 4 — Canny structural edges: reinforce boundaries of dark objects
-        #     Blended in to give clean outlines at clothing/skin boundaries
+        # 4 — Canny structural edges: reinforce clothing / skin boundaries
         canny = cv2.Canny(
             cv2.GaussianBlur(orig_gray, (5, 5), 0), 40, 120
         ).astype(np.float32) / 255.0
-        # Canny edges → dark on paper (invert: edge=0, background=1 on paper)
-        # Blend: where Canny fires, push toward black (0)
+        # Where Canny fires, push toward black (0)
         dodge = dodge * (1.0 - SKETCH_EDGE_BLEND * canny)
 
-        # 5 — Gamma LUT: lift mid-tones to paper-white (less aggressive now)
+        # 5 — Gamma LUT: lift paper regions to white
         lut    = np.array(
             [int((i / 255.0) ** SKETCH_GAMMA * 255) for i in range(256)],
             dtype=np.uint8,
         )
-        sketch = cv2.LUT(np.clip(dodge, 0, 255).astype(np.uint8), lut)
+        sketch = cv2.LUT(np.clip(dodge * 255, 0, 255).astype(np.uint8), lut)
 
         # 6 — Gentle line sharpening
         kernel = np.array([[0, -0.5, 0], [-0.5, 3, -0.5], [0, -0.5, 0]], np.float32)
@@ -115,7 +128,8 @@ class SketchCartoon:
     def _cartoon(img: np.ndarray) -> tuple[np.ndarray, int]:
         h, w = img.shape[:2]
 
-        # 1 — Moderate bilateral: flatten colours, preserve facial structure
+        # 1 — Bilateral: flatten colours while preserving facial structure
+        #     sigma=60 (was 80) keeps the face-clothing boundary intact
         smooth = img.copy()
         for _ in range(CARTOON_BILATERAL_PASSES):
             smooth = cv2.bilateralFilter(
@@ -128,10 +142,11 @@ class SketchCartoon:
         # 2 — Median blur: remove remaining speckle without destroying face edges
         smooth = cv2.medianBlur(smooth, CARTOON_MEDIAN_K)
 
-        # 3 — K-means colour quantisation (k=14 gives distinct clusters for
-        #     skin / hair / clothing / background / highlights)
+        # 3 — K-means colour quantisation (k=10 with 8 attempts gives stable
+        #     convergence; distinct clusters for skin / sky / clothing / fabric /
+        #     hair / shadow)
         pixels   = smooth.reshape(-1, 3).astype(np.float32)
-        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.5)
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 40, 0.2)
         _, labels, centers = cv2.kmeans(
             pixels,
             CARTOON_KMEANS_K,
@@ -142,8 +157,12 @@ class SketchCartoon:
         )
         quantized = centers[labels.flatten()].astype(np.uint8).reshape(h, w, 3)
 
-        # 4 — Canny edges on ORIGINAL image (not smoothed) for facial details
-        #     Lower thresholds (50/130) catch eyes, nose bridge, lip lines
+        # 4 — Post-quantisation bilateral: smooth jagged cluster boundaries
+        #     Use gentle params (sigma=40) so grain disappears but outlines survive
+        quantized = cv2.bilateralFilter(quantized, d=7, sigmaColor=40, sigmaSpace=40)
+
+        # 5 — Canny edges on ORIGINAL image (not smoothed) for facial details
+        #     Lower thresholds (30/100) catch eyes, nose bridge, lip lines
         orig_gray = cv2.GaussianBlur(
             cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), (5, 5), 0
         )
@@ -157,13 +176,15 @@ class SketchCartoon:
                 iterations=1,
             )
 
-        # 5 — Overlay black outlines on quantised canvas
+        # 6 — Overlay black outlines on quantised canvas
         result = quantized.copy()
         result[edges > 0] = 0
 
-        # 6 — Saturation boost so flat colours feel vivid
+        # 7 — Saturation boost so flat colours feel vivid
+        #     Raised to 1.35 (was 1.25) since k=10 large uniform regions
+        #     benefit from stronger pop
         hsv              = cv2.cvtColor(result, cv2.COLOR_BGR2HSV).astype(np.float32)
-        hsv[:, :, 1]     = np.clip(hsv[:, :, 1] * 1.25, 0, 255)
+        hsv[:, :, 1]     = np.clip(hsv[:, :, 1] * 1.35, 0, 255)
         result           = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
 
         # Score: colour variance reduction (more reduction = cleaner cartoon)

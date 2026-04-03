@@ -12,35 +12,37 @@ GRABCUT_MORPH_K    = 7
 GRABCUT_EDGE_BLUR  = 5
 
 # ── Enhancement ───────────────────────────────────────────────────────────────
-DENOISE_H            = 3
-DENOISE_H_COLOR      = 3
+DENOISE_H            = 5        # was 3 — more meaningful noise removal
+DENOISE_H_COLOR      = 5        # was 3
 DENOISE_TEMPLATE_WIN = 7
 DENOISE_SEARCH_WIN   = 21
-CLAHE_CLIP_LIMIT     = 1.8
+CLAHE_CLIP_LIMIT     = 2.5      # was 1.8 — stronger local contrast
 CLAHE_TILE_GRID      = (8, 8)
-UNSHARP_SHARP_W      = 1.3
-UNSHARP_BLUR_W       = -0.3
-UNSHARP_SIGMA        = 1.5
+CLAHE_CLIP_LOW       = 1.2      # used by adaptive CLAHE for already-contrasty images
+CLAHE_CLIP_HIGH      = 3.5      # used by adaptive CLAHE for flat/washed-out images
+UNSHARP_SHARP_W      = 1.5      # was 1.3 — crisper edges
+UNSHARP_BLUR_W       = -0.5     # was -0.3
+UNSHARP_SIGMA        = 2.0      # was 1.5 — wider sharpening kernel
 UNSHARP_FLAT_THRESH  = 8
-ENHANCE_SAT_BOOST    = 1.12
+ENHANCE_VIBRANCE_STRENGTH = 0.35  # selective vibrance: replaces flat SAT_BOOST
 
 # ── Sketch ────────────────────────────────────────────────────────────────────
 SKETCH_BILATERAL_D      = 9
 SKETCH_BILATERAL_SIGMA  = 75
-SKETCH_DODGE_SIGMA      = 22
-SKETCH_GAMMA            = 0.60
-SKETCH_DARKNESS_W       = 0.45
+SKETCH_DODGE_SIGMA      = 15      # was 22 — tighter blur → crisper line separation
+SKETCH_GAMMA            = 0.80    # was 0.60 — paper-white without lifting darks
+SKETCH_DARKNESS_W       = 0.55    # was 0.45 — stronger shadow preservation
 SKETCH_EDGE_BLEND       = 0.35
 
 # ── Cartoon ───────────────────────────────────────────────────────────────────
 CARTOON_BILATERAL_PASSES = 3
 CARTOON_BILATERAL_D      = 9
-CARTOON_BILATERAL_SIGMA  = 80
+CARTOON_BILATERAL_SIGMA  = 60      # was 80 — preserve face boundary pre-kmeans
 CARTOON_MEDIAN_K         = 7
-CARTOON_KMEANS_K         = 14
-CARTOON_KMEANS_ATTEMPTS  = 5
-CARTOON_CANNY_LOW        = 50
-CARTOON_CANNY_HIGH       = 130
+CARTOON_KMEANS_K         = 10      # was 14 — fewer but stable clusters
+CARTOON_KMEANS_ATTEMPTS  = 8       # was 5 — better convergence
+CARTOON_CANNY_LOW        = 30      # was 50 — catch finer facial outlines
+CARTOON_CANNY_HIGH       = 100     # was 130
 CARTOON_EDGE_DILATE      = 1
 
 # ── Filters: Oil Painting ─────────────────────────────────────────────────────

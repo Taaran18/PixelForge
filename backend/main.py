@@ -343,6 +343,25 @@ async def portrait(
     return _resp(jpg, "image/jpeg", score)
 
 
+@app.post("/detection/remove-object", tags=["detection"])
+async def remove_object(
+    file: UploadFile = File(...),
+    mask: UploadFile = File(...),
+    radius: int = Form(12),
+):
+    raw      = await file.read()
+    mask_raw = await mask.read()
+    jpg, score = detection.remove_object(raw, mask_raw, radius)
+    return _resp(jpg, "image/jpeg", score)
+
+
+@app.post("/detection/remove-people", tags=["detection"])
+async def remove_people(file: UploadFile = File(...)):
+    raw = await file.read()
+    jpg, score = detection.remove_people(raw)
+    return _resp(jpg, "image/jpeg", score)
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # ANALYSIS & DIAGNOSTICS
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

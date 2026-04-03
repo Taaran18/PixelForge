@@ -7,7 +7,8 @@ import {
   Paintbrush, Droplets, Gauge, Grid2x2,
   Eye, Palette, Eraser, ScanLine, Focus, ScanSearch,
   UserX, User, BarChart3, Activity, Crosshair, Lightbulb,
-  ChevronDown, ChevronRight, Film, Wand2,
+  ChevronDown, ChevronRight, Film, Wand2, Users, Brush,
+  Plus, CheckCircle2, Clock,
 } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -31,6 +32,7 @@ interface Tool {
   icon: React.ReactNode;
   endpoint: string;
   resultIsPng?: boolean;
+  maskTool?: boolean;   // requires canvas mask drawn by user
   params?: Param[];
 }
 
@@ -416,6 +418,24 @@ const CATEGORIES: Category[] = [
           },
         ],
       },
+      {
+        id: "detection/remove-object",
+        label: "Object Remover",
+        description: "Paint over any object to erase it. Uses inpainting to fill seamlessly.",
+        icon: <Eraser className="w-5 h-5" />,
+        endpoint: "/detection/remove-object",
+        maskTool: true,
+        params: [
+          { key: "radius", label: "Radius", type: "slider", min: 4, max: 30, step: 1, default: 12 },
+        ],
+      },
+      {
+        id: "detection/remove-people",
+        label: "Remove People",
+        description: "Auto-detect and erase people from the image using HOG + inpainting.",
+        icon: <Users className="w-5 h-5" />,
+        endpoint: "/detection/remove-people",
+      },
     ],
   },
   {
@@ -472,30 +492,104 @@ function formatBytes(b: number): string {
   return `${(b / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+// ── Custom themed dropdown ─────────────────────────────────────────────────────
+function CustomSelect({ value, onChange, options }: {
+  value: string;
+  onChange: (v: string) => void;
+  options: { label: string; value: string }[];
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const selected = options.find(o => o.value === value);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen(p => !p)}
+        className="flex items-center gap-1.5 bg-transparent text-content-primary text-xs font-semibold outline-none cursor-pointer hover:text-brand-purple transition-colors"
+      >
+        {selected?.label ?? value}
+        <ChevronDown className={`w-3 h-3 text-content-muted transition-transform duration-150 ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <div className="absolute top-full left-0 mt-2 min-w-[120px] rounded-xl border border-surface-border overflow-hidden z-[100] animate-fade-in"
+          style={{background:"var(--bg-card)", boxShadow:"0 16px 48px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.04)"}}>
+          {options.map(opt => (
+            <button key={opt.value} type="button"
+              onClick={() => { onChange(opt.value); setOpen(false); }}
+              className={`w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm transition-colors ${
+                opt.value === value
+                  ? "bg-brand-purple/15 text-brand-purple font-semibold"
+                  : "text-content-secondary hover:bg-surface-elevated hover:text-content-primary"
+              }`}>
+              {opt.value === value && <div className="w-1.5 h-1.5 rounded-full bg-brand-purple flex-shrink-0" />}
+              {opt.value !== value && <div className="w-1.5 h-1.5 flex-shrink-0" />}
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── FileEntry type for multi-file support ──────────────────────────────────────
+interface FileEntry {
+  id: string;
+  file: File;
+  previewUrl: string;
+  resultBlob: Blob | null;
+  resultUrl: string | null;
+  score: number | null;
+  status: "idle" | "processing" | "done" | "error";
+  error: string | null;
+}
+
+const FORMATS = [
+  { label: "JPEG",  ext: "jpg",  mime: "image/jpeg" },
+  { label: "PNG",   ext: "png",  mime: "image/png"  },
+  { label: "WebP",  ext: "webp", mime: "image/webp" },
+  { label: "AVIF",  ext: "avif", mime: "image/avif" },
+];
+
 // ── Main component ─────────────────────────────────────────────────────────────
 export default function Home() {
-  const [selectedId, setSelectedId]         = useState<string>("remove-background");
-  const [uploadedFile, setUploadedFile]     = useState<File | null>(null);
-  const [previewUrl, setPreviewUrl]         = useState<string | null>(null);
-  const [resultUrl, setResultUrl]           = useState<string | null>(null);
-  const [isProcessing, setIsProcessing]     = useState(false);
-  const [error, setError]                   = useState<string | null>(null);
-  const [isDragOver, setIsDragOver]         = useState(false);
-  const [isDark, setIsDark]                 = useState(true);
-  const [transformScore, setTransformScore] = useState<number | null>(null);
-  const [openCats, setOpenCats]             = useState<Set<string>>(new Set(["core"]));
-  // param state: paramKey → value
-  const [params, setParams]                 = useState<Record<string, string | number>>({});
+  const [selectedId, setSelectedId]     = useState<string>("remove-background");
+  const [files, setFiles]               = useState<FileEntry[]>([]);
+  const [isDragOver, setIsDragOver]     = useState(false);
+  const [isDark, setIsDark]             = useState(true);
+  const [openCat, setOpenCat]           = useState<string>("core");
+  const [toolSearch, setToolSearch]     = useState<string>("");
+  const [params, setParams]             = useState<Record<string, string | number>>({});
+  const [brushSize, setBrushSize]       = useState<number>(30);
+  const [isDrawingMask, setIsDrawingMask] = useState(false);
+  const [selectedFormat, setSelectedFormat] = useState<string>("jpg");
+  const [isProcessingAll, setIsProcessingAll] = useState(false);
+  const [globalError, setGlobalError]   = useState<string | null>(null);
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const resultRef    = useRef<HTMLDivElement>(null);
+  const fileInputRef  = useRef<HTMLInputElement>(null);
+  const maskCanvasRef = useRef<HTMLCanvasElement>(null);
+  const imgPreviewRef = useRef<HTMLImageElement>(null);
 
   // Sync theme on mount
   useEffect(() => { setIsDark(document.documentElement.classList.contains("dark")); }, []);
-  useEffect(() => () => { if (previewUrl) URL.revokeObjectURL(previewUrl); }, [previewUrl]);
-  useEffect(() => () => { if (resultUrl)  URL.revokeObjectURL(resultUrl);  }, [resultUrl]);
 
-  // Reset params to defaults when tool changes
+  // Revoke all URLs on unmount
+  useEffect(() => () => {
+    files.forEach(e => { URL.revokeObjectURL(e.previewUrl); if (e.resultUrl) URL.revokeObjectURL(e.resultUrl); });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Reset params when tool changes
   useEffect(() => {
     const tool = TOOL_MAP[selectedId];
     if (!tool?.params) { setParams({}); return; }
@@ -504,6 +598,34 @@ export default function Home() {
     setParams(defaults);
   }, [selectedId]);
 
+  // Clear mask on tool change
+  useEffect(() => {
+    const c = maskCanvasRef.current;
+    if (c) { const ctx = c.getContext("2d"); ctx?.clearRect(0, 0, c.width, c.height); }
+  }, [selectedId]);
+
+  // ── Canvas mask painting ─────────────────────────────────────────────────────
+  const paintMask = useCallback((e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
+    const canvas = maskCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const clientX = "touches" in e ? e.touches[0].clientX : e.clientX;
+    const clientY = "touches" in e ? e.touches[0].clientY : e.clientY;
+    ctx.fillStyle = "rgba(255,80,80,0.85)";
+    ctx.beginPath();
+    ctx.arc((clientX - rect.left) * scaleX, (clientY - rect.top) * scaleY, brushSize * scaleX, 0, Math.PI * 2);
+    ctx.fill();
+  }, [brushSize]);
+
+  const clearMask = useCallback(() => {
+    const c = maskCanvasRef.current;
+    if (c) { const ctx = c.getContext("2d"); ctx?.clearRect(0, 0, c.width, c.height); }
+  }, []);
+
   const toggleTheme = () => {
     const next = !isDark;
     setIsDark(next);
@@ -511,359 +633,513 @@ export default function Home() {
     document.documentElement.classList.toggle("dark", next);
   };
 
-  const toggleCat = (id: string) => {
-    setOpenCats((prev) => {
-      const s = new Set(prev);
-      s.has(id) ? s.delete(id) : s.add(id);
-      return s;
-    });
-  };
+  const toggleCat = (id: string) => setOpenCat((prev) => (prev === id ? "" : id));
 
-  // ── File handling ────────────────────────────────────────────────────────────
-  const acceptFile = useCallback((file: File) => {
-    if (!file.type.startsWith("image/")) { setError("Please upload an image file."); return; }
-    if (file.size > 20 * 1024 * 1024)   { setError("File must be under 20 MB."); return; }
-    setError(null); setResultUrl(null);
-    setUploadedFile(file);
-    setPreviewUrl(URL.createObjectURL(file));
+  // ── File handling ─────────────────────────────────────────────────────────────
+  const addFiles = useCallback((incoming: File[]) => {
+    setGlobalError(null);
+    const valid = incoming.filter(f => {
+      if (!f.type.startsWith("image/")) return false;
+      if (f.size > 20 * 1024 * 1024)    return false;
+      return true;
+    });
+    if (valid.length < incoming.length) setGlobalError("Some files were skipped (not an image or >20 MB).");
+    setFiles(prev => [
+      ...prev,
+      ...valid.map(f => ({
+        id: crypto.randomUUID(),
+        file: f,
+        previewUrl: URL.createObjectURL(f),
+        resultBlob: null,
+        resultUrl:  null,
+        score:      null,
+        status:     "idle" as const,
+        error:      null,
+      })),
+    ]);
+  }, []);
+
+  const removeEntry = useCallback((id: string) => {
+    setFiles(prev => {
+      const e = prev.find(x => x.id === id);
+      if (e) { URL.revokeObjectURL(e.previewUrl); if (e.resultUrl) URL.revokeObjectURL(e.resultUrl); }
+      return prev.filter(x => x.id !== id);
+    });
   }, []);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0]; if (f) acceptFile(f); e.target.value = "";
+    if (e.target.files) addFiles(Array.from(e.target.files));
+    e.target.value = "";
   };
-  const handleDrop      = (e: React.DragEvent) => {
+  const handleDrop = (e: React.DragEvent) => {
     e.preventDefault(); setIsDragOver(false);
-    const f = e.dataTransfer.files?.[0]; if (f) acceptFile(f);
+    if (e.dataTransfer.files) addFiles(Array.from(e.dataTransfer.files));
   };
   const handleDragOver  = (e: React.DragEvent) => { e.preventDefault(); setIsDragOver(true); };
   const handleDragLeave = (e: React.DragEvent) => { e.preventDefault(); setIsDragOver(false); };
 
-  // ── Process ──────────────────────────────────────────────────────────────────
-  const handleProcess = async () => {
-    if (!uploadedFile) return;
-    const tool = TOOL_MAP[selectedId];
-    const form = new FormData();
-    form.append("file", uploadedFile);
-    Object.entries(params).forEach(([k, v]) => form.append(k, String(v)));
-
-    setIsProcessing(true); setError(null); setResultUrl(null); setTransformScore(null);
-
-    try {
-      const res = await fetch(`${API_URL}${tool.endpoint}`, { method: "POST", body: form });
-      if (!res.ok) {
-        let msg = `Server error: ${res.status}`;
-        try { const j = await res.json(); msg = j.detail || msg; } catch { /* ignore */ }
-        throw new Error(msg);
-      }
-      const scoreHdr = res.headers.get("x-transform-score");
-      setTransformScore(scoreHdr ? parseInt(scoreHdr, 10) : null);
-      setResultUrl(URL.createObjectURL(await res.blob()));
-      setTimeout(() => resultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message.toLowerCase().includes("fetch")
-            ? "Cannot reach the backend. Make sure FastAPI is running on port 8000."
-            : err.message
-          : "Unexpected error."
-      );
-    } finally {
-      setIsProcessing(false);
-    }
+  // ── Process all files ─────────────────────────────────────────────────────────
+  const getMaskBlob = async (): Promise<Blob | null> => {
+    if (!maskCanvasRef.current) return null;
+    return new Promise<Blob | null>(res => maskCanvasRef.current!.toBlob(res, "image/png"));
   };
 
-  const handleDownload = () => {
-    if (!resultUrl) return;
+  const processAll = async () => {
     const tool = TOOL_MAP[selectedId];
+    const toProcess = files.filter(e => e.status === "idle" || e.status === "error");
+    if (toProcess.length === 0) return;
+    setIsProcessingAll(true);
+    setGlobalError(null);
+
+    const maskBlob = tool.maskTool ? await getMaskBlob() : null;
+
+    for (const entry of toProcess) {
+      setFiles(prev => prev.map(e => e.id === entry.id ? { ...e, status: "processing", error: null } : e));
+      try {
+        const form = new FormData();
+        form.append("file", entry.file);
+        Object.entries(params).forEach(([k, v]) => form.append(k, String(v)));
+        if (maskBlob) form.append("mask", maskBlob, "mask.png");
+
+        const res = await fetch(`${API_URL}${tool.endpoint}`, { method: "POST", body: form });
+        if (!res.ok) {
+          let msg = `Server error ${res.status}`;
+          try { const j = await res.json(); msg = j.detail || msg; } catch { /* ignore */ }
+          throw new Error(msg);
+        }
+        const score = res.headers.get("x-transform-score");
+        const blob  = await res.blob();
+        const url   = URL.createObjectURL(blob);
+        setFiles(prev => prev.map(e => e.id === entry.id
+          ? { ...e, status: "done", resultBlob: blob, resultUrl: url, score: score ? parseInt(score, 10) : null }
+          : e));
+      } catch (err) {
+        const msg = err instanceof Error
+          ? err.message.toLowerCase().includes("fetch")
+            ? "Cannot reach backend (port 8000)."
+            : err.message
+          : "Unexpected error.";
+        setFiles(prev => prev.map(e => e.id === entry.id ? { ...e, status: "error", error: msg } : e));
+      }
+    }
+    setIsProcessingAll(false);
+  };
+
+  // ── Download helpers ──────────────────────────────────────────────────────────
+  const convertBlob = async (blob: Blob, url: string, mime: string): Promise<Blob> => {
+    if (blob.type === mime) return blob;
+    const img = new Image();
+    img.src = url;
+    await new Promise<void>(r => { img.onload = () => r(); });
+    const canvas = document.createElement("canvas");
+    canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+    canvas.getContext("2d")!.drawImage(img, 0, 0);
+    return new Promise<Blob>(r => canvas.toBlob(b => r(b!), mime, 0.92)!);
+  };
+
+  const downloadEntry = async (entry: FileEntry) => {
+    if (!entry.resultBlob || !entry.resultUrl) return;
+    const fmt  = FORMATS.find(f => f.ext === selectedFormat) ?? FORMATS[0];
+    const blob = await convertBlob(entry.resultBlob, entry.resultUrl, fmt.mime);
     const a = document.createElement("a");
-    a.href = resultUrl;
-    a.download = `pixelforge-${selectedId.replace("/", "-")}.${tool.resultIsPng ? "png" : "jpg"}`;
+    a.href = URL.createObjectURL(blob);
+    a.download = `${entry.file.name.replace(/\.[^.]+$/, "")}_pf.${fmt.ext}`;
     a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  const downloadAllZip = async () => {
+    const done = files.filter(e => e.status === "done" && e.resultBlob);
+    if (done.length === 0) return;
+    const fmt = FORMATS.find(f => f.ext === selectedFormat) ?? FORMATS[0];
+    const JSZip = (await import("jszip")).default;
+    const zip   = new JSZip();
+    for (const entry of done) {
+      const blob = await convertBlob(entry.resultBlob!, entry.resultUrl!, fmt.mime);
+      zip.file(`${entry.file.name.replace(/\.[^.]+$/, "")}_pf.${fmt.ext}`, blob);
+    }
+    const zipBlob = await zip.generateAsync({ type: "blob" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(zipBlob);
+    a.download = "pixelforge-results.zip";
+    a.click();
+    URL.revokeObjectURL(a.href);
   };
 
   const currentTool = TOOL_MAP[selectedId];
   const currentCat  = CATEGORIES.find((c) => c.id === currentTool?.categoryId);
+  const doneCount   = files.filter(e => e.status === "done").length;
+  const firstFile   = files[0] ?? null;
 
   // ── Render ───────────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen flex flex-col">
-
+    <div className="min-h-screen flex flex-col bg-[var(--bg-base)]">
       {/* Ambient glows */}
-      <div className="fixed inset-0 pointer-events-none overflow-hidden">
-        <div className="absolute -top-40 -left-40 w-[600px] h-[600px] rounded-full bg-brand-purple/10 blur-[120px] opacity-40 dark:opacity-100" />
-        <div className="absolute -top-20 -right-40 w-[500px] h-[500px] rounded-full bg-brand-cyan/10 blur-[120px] opacity-30 dark:opacity-100" />
+      <div className="fixed inset-0 pointer-events-none overflow-hidden z-0">
+        <div className="absolute -top-60 -left-60 w-[800px] h-[800px] rounded-full bg-brand-purple/8 blur-[140px]" />
+        <div className="absolute top-1/3 -right-60 w-[600px] h-[600px] rounded-full bg-brand-cyan/8 blur-[140px]" />
       </div>
 
-      {/* Theme toggle */}
-      <button onClick={toggleTheme} className="btn-icon fixed top-4 right-4 z-50 w-10 h-10" aria-label="Toggle theme">
-        {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-      </button>
-
-      <main className="relative flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 flex flex-col gap-12">
-
-        {/* ── Hero ── */}
-        <section className="text-center flex flex-col items-center gap-4 animate-fade-in">
-          <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-surface-border bg-surface-card text-xs font-medium text-content-muted uppercase tracking-widest">
-            <Zap className="w-3.5 h-3.5 text-brand-cyan" />
+      {/* ══ Sticky Header ══ */}
+      <header className="sticky top-0 z-50 border-b border-surface-border bg-surface-card/90 backdrop-blur-xl">
+        <div className="w-full px-4 sm:px-6 lg:px-10 h-14 flex items-center gap-3">
+          <div className="flex items-center gap-2.5 flex-shrink-0">
+            <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-brand-purple to-brand-cyan flex items-center justify-center">
+              <Zap className="w-4 h-4 text-white" />
+            </div>
+            <h1 className="text-lg font-extrabold tracking-tight"><span className="gradient-text">PixelForge</span></h1>
+          </div>
+          <div className="hidden lg:flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-surface-border text-xs text-content-muted">
             Free · Instant · Private
           </div>
-          <h1 className="text-6xl sm:text-7xl font-extrabold tracking-tight">
-            <span className="gradient-text">PixelForge</span>
-          </h1>
-          <p className="max-w-xl text-content-muted text-lg leading-relaxed">
-            Upload a photo, pick a tool, download your result.{" "}
-            <span className="text-content-secondary font-medium">No account, no cloud uploads.</span>
-          </p>
-        </section>
+          <div className="flex-1" />
+          {/* Search */}
+          <div className="flex items-center gap-2 px-3 py-2 rounded-xl border border-surface-border bg-surface-elevated w-40 sm:w-56 md:w-72 transition-all focus-within:border-brand-purple/50 focus-within:bg-surface-card">
+            <ScanSearch className="w-3.5 h-3.5 text-content-muted flex-shrink-0" />
+            <input type="text" placeholder="Search 34 tools…" value={toolSearch}
+              onChange={e => setToolSearch(e.target.value)}
+              className="flex-1 bg-transparent text-sm text-content-primary placeholder:text-content-subtle outline-none min-w-0" />
+            {toolSearch && <button onClick={() => setToolSearch("")} className="text-content-subtle hover:text-content-primary transition-colors"><X className="w-3.5 h-3.5" /></button>}
+          </div>
+          <button onClick={toggleTheme} className="btn-icon w-9 h-9 flex-shrink-0" aria-label="Toggle theme">
+            {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+          </button>
+        </div>
+      </header>
 
-        {/* ── Layout: Sidebar + Main ── */}
-        <div className="flex flex-col lg:flex-row gap-8">
+      {/* ══ Sticky Tool Navigator ══ */}
+      <div className="sticky top-14 z-40 border-b border-surface-border bg-surface-card/80 backdrop-blur-xl">
+        <div className="w-full px-4 sm:px-6 lg:px-10 h-11 flex items-center gap-1">
+          {openCat && !toolSearch && <div className="fixed inset-0 z-10" onClick={() => setOpenCat("")} />}
 
-          {/* ── Sidebar: Category + Tool selector ── */}
-          <aside className="lg:w-72 xl:w-80 flex-shrink-0 flex flex-col gap-2">
-            {CATEGORIES.map((cat) => {
-              const isOpen = openCats.has(cat.id);
-              return (
-                <div key={cat.id} className="glass-card overflow-hidden">
-                  {/* Category header */}
-                  <button
-                    onClick={() => toggleCat(cat.id)}
-                    className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-surface-elevated transition-colors"
-                  >
-                    <span className={cat.color}>{cat.icon}</span>
-                    <span className="flex-1 text-sm font-semibold text-content-secondary">{cat.label}</span>
-                    <span className="text-content-subtle">
-                      {isOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-                    </span>
-                  </button>
-
-                  {/* Tool list */}
-                  {isOpen && (
-                    <div className="border-t border-surface-border">
-                      {cat.tools.map((tool) => {
+          {!toolSearch && CATEGORIES.map(cat => {
+            const isActive = openCat === cat.id;
+            const hasTool  = cat.tools.some(t => t.id === selectedId);
+            return (
+              <div key={cat.id} className="relative z-20 flex-shrink-0">
+                <button onClick={() => toggleCat(cat.id)}
+                  className={`flex items-center gap-1.5 px-2.5 h-8 rounded-lg text-xs font-semibold transition-all whitespace-nowrap ${
+                    isActive ? "bg-brand-purple/15 text-content-primary ring-1 ring-brand-purple/30"
+                    : hasTool ? "bg-surface-elevated text-content-primary"
+                    : "text-content-muted hover:bg-surface-elevated hover:text-content-secondary"}`}>
+                  <span className={isActive || hasTool ? cat.color : "opacity-60"}>{cat.icon}</span>
+                  <span className="hidden md:inline">{cat.label}</span>
+                  <ChevronDown className={`w-3 h-3 opacity-60 transition-transform duration-200 ${isActive ? "rotate-180" : ""}`} />
+                </button>
+                {isActive && (
+                  <div className="absolute top-full left-0 mt-2 w-56 rounded-2xl border border-surface-border overflow-hidden animate-fade-in"
+                    style={{background:"var(--bg-card)", boxShadow:"0 20px 60px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.05)"}}>
+                    <div className="px-4 py-3 border-b border-surface-border bg-surface-elevated/50">
+                      <p className={`text-xs font-bold uppercase tracking-widest ${cat.color}`}>{cat.label}</p>
+                    </div>
+                    <div className="py-1">
+                      {cat.tools.map(tool => {
                         const active = selectedId === tool.id;
                         return (
-                          <button
-                            key={tool.id}
-                            onClick={() => {
-                              setSelectedId(tool.id);
-                              setResultUrl(null);
-                              setError(null);
-                            }}
-                            className={`w-full flex items-center gap-3 px-4 py-2.5 text-left transition-all duration-150 ${
-                              active
-                                ? "bg-brand-purple/10 border-l-2 border-brand-purple"
-                                : "border-l-2 border-transparent hover:bg-surface-elevated"
-                            }`}
-                          >
-                            <span className={active ? "text-brand-purple" : "text-content-muted"}>
-                              {tool.icon}
-                            </span>
-                            <div className="min-w-0">
-                              <p className={`text-sm font-medium truncate ${active ? "text-content-primary" : "text-content-secondary"}`}>
-                                {tool.label}
-                              </p>
-                            </div>
+                          <button key={tool.id}
+                            onClick={() => { setSelectedId(tool.id); setOpenCat(""); setFiles(prev => prev.map(e => ({...e, resultUrl: null, resultBlob: null, status: "idle"}))); }}
+                            className={`w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors ${active ? "bg-brand-purple/12 text-brand-purple" : "text-content-secondary hover:bg-surface-elevated/70 hover:text-content-primary"}`}>
+                            <span className={`flex-shrink-0 ${active ? "text-brand-purple" : "text-content-muted"}`}>{tool.icon}</span>
+                            <span className="text-sm font-medium flex-1">{tool.label}</span>
+                            {active && <CheckCircle2 className="w-3.5 h-3.5 text-brand-purple flex-shrink-0" />}
                           </button>
                         );
                       })}
                     </div>
-                  )}
-                </div>
-              );
-            })}
-          </aside>
-
-          {/* ── Main panel ── */}
-          <div className="flex-1 flex flex-col gap-8">
-
-            {/* Tool header + description */}
-            {currentTool && (
-              <div className="flex flex-col items-center text-center gap-3 animate-fade-in">
-                <div className={`w-12 h-12 rounded-xl flex items-center justify-center bg-surface-elevated ${currentCat?.color ?? "text-brand-purple"}`}>
-                  {currentTool.icon}
-                </div>
-                <div>
-                  <div className="flex items-center justify-center gap-2">
-                    <h2 className="text-lg font-bold text-content-primary">{currentTool.label}</h2>
-                    {currentCat && (
-                      <span className={`text-xs font-medium px-2 py-0.5 rounded-full bg-surface-elevated ${currentCat.color}`}>
-                        {currentCat.label}
-                      </span>
-                    )}
                   </div>
-                  <p className="text-sm text-content-muted mt-0.5">{currentTool.description}</p>
-                </div>
+                )}
               </div>
-            )}
+            );
+          })}
 
-            {/* ── Tool Params ── */}
-            {currentTool?.params && currentTool.params.length > 0 && (
-              <div className="glass-card p-5 flex flex-wrap gap-6 animate-fade-in">
-                {currentTool.params.map((p) => (
-                  <div key={p.key} className="flex flex-col gap-1.5 min-w-[160px]">
-                    <label className="text-xs font-semibold text-content-subtle uppercase tracking-wide">
-                      {p.label}
-                      {(p.type === "slider" || p.type === "slider-float") && (
-                        <span className="ml-2 text-brand-cyan normal-case font-mono">
-                          {params[p.key] ?? p.default}
-                        </span>
-                      )}
-                    </label>
-                    {p.type === "select" && (
-                      <select
-                        value={String(params[p.key] ?? p.default)}
-                        onChange={(e) => setParams((prev) => ({ ...prev, [p.key]: e.target.value }))}
-                        className="bg-surface-elevated border border-surface-border text-content-primary text-sm rounded-lg px-3 py-2 outline-none focus:border-brand-purple transition-colors"
-                      >
-                        {p.options!.map((o) => (
-                          <option key={o.value} value={o.value}>{o.label}</option>
-                        ))}
-                      </select>
-                    )}
-                    {(p.type === "slider" || p.type === "slider-float") && (
-                      <input
-                        type="range"
-                        min={p.min} max={p.max} step={p.step}
-                        value={Number(params[p.key] ?? p.default)}
-                        onChange={(e) =>
-                          setParams((prev) => ({
-                            ...prev,
-                            [p.key]: p.type === "slider-float"
-                              ? parseFloat(e.target.value)
-                              : parseInt(e.target.value, 10),
-                          }))
-                        }
-                        className="accent-brand-purple w-full"
-                      />
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
+          {toolSearch && (() => {
+            const q = toolSearch.toLowerCase();
+            const matches = CATEGORIES.flatMap(cat => cat.tools
+              .filter(t => t.label.toLowerCase().includes(q) || t.description.toLowerCase().includes(q))
+              .map(t => ({ tool: t, cat })));
+            return matches.length === 0
+              ? <p className="text-xs text-content-subtle px-2">No tools match &ldquo;{toolSearch}&rdquo;</p>
+              : <div className="flex gap-1.5 overflow-x-auto scrollbar-hide flex-1 py-1">
+                  {matches.map(({ tool, cat }) => (
+                    <button key={tool.id} onClick={() => { setSelectedId(tool.id); setToolSearch(""); }}
+                      className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium border transition-all ${
+                        selectedId === tool.id ? "bg-brand-purple/20 border-brand-purple/40 text-brand-purple"
+                        : "bg-surface-card border-surface-border text-content-muted hover:bg-surface-elevated"}`}>
+                      {tool.icon}<span>{tool.label}</span>
+                      <span className="text-content-subtle/50 hidden sm:inline">· {cat.label}</span>
+                    </button>
+                  ))}
+                </div>;
+          })()}
+        </div>
+      </div>
 
-            {/* ── Upload ── */}
-            {!uploadedFile ? (
-              <div
-                onDrop={handleDrop} onDragOver={handleDragOver} onDragLeave={handleDragLeave}
-                onClick={() => fileInputRef.current?.click()}
-                className={`glass-card border-2 border-dashed border-surface-border rounded-2xl p-12 flex flex-col items-center justify-center gap-4 cursor-pointer transition-all duration-200 min-h-[200px] ${
-                  isDragOver ? "drop-zone-active" : "hover:border-brand-purple/40 hover:bg-brand-purple/5"
-                }`}
-              >
-                <div className="w-14 h-14 rounded-2xl bg-surface-elevated flex items-center justify-center">
-                  <Upload className="w-6 h-6 text-content-muted" />
-                </div>
-                <div className="text-center">
-                  <p className="text-content-secondary font-medium mb-1">
-                    Drop an image here, or{" "}
-                    <span className="text-brand-purple">click to browse</span>
-                  </p>
-                  <p className="text-sm text-content-subtle">JPEG, PNG, WebP · Max 20 MB</p>
-                </div>
-                <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleFileChange} />
-              </div>
-            ) : (
-              <div className="glass-card p-4 flex gap-4 items-center animate-fade-in">
-                <div className="w-16 h-16 rounded-xl overflow-hidden flex-shrink-0 bg-surface-elevated checkerboard">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={previewUrl!} alt="Preview" className="w-full h-full object-cover" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-content-primary font-medium truncate">{uploadedFile.name}</p>
-                  <p className="text-sm text-content-muted mt-0.5">{formatBytes(uploadedFile.size)}</p>
-                </div>
-                <div className="flex gap-2">
-                  <button onClick={() => fileInputRef.current?.click()} className="btn-secondary text-xs">
-                    <ImageIcon className="w-3.5 h-3.5" /> Change
-                  </button>
-                  <button onClick={() => { setUploadedFile(null); setPreviewUrl(null); setResultUrl(null); setError(null); }} className="btn-secondary text-xs">
-                    <X className="w-3.5 h-3.5" /> Remove
-                  </button>
-                </div>
-                <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleFileChange} />
-              </div>
-            )}
+      {/* ══ Main scrollable content ══ */}
+      <main className="relative z-10 flex-1 w-full px-4 sm:px-6 lg:px-10 py-6 space-y-6">
 
-            {/* ── Error ── */}
-            {error && (
-              <div className="flex items-start gap-3 p-4 rounded-xl border border-red-500/30 bg-red-500/10 text-red-500 dark:text-red-400 text-sm animate-fade-in">
-                <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
-                <span className="flex-1">{error}</span>
-                <button onClick={() => setError(null)} className="opacity-60 hover:opacity-100"><X className="w-4 h-4" /></button>
-              </div>
-            )}
-
-            {/* ── Process Button ── */}
-            <div className="flex justify-center">
-              <button onClick={handleProcess} disabled={!uploadedFile || isProcessing} className="btn-primary text-base px-10 py-4">
-                {isProcessing
-                  ? <><Loader2 className="w-5 h-5 animate-spin" /> Processing…</>
-                  : <>{currentTool?.icon} Run {currentTool?.label}</>
-                }
-              </button>
+        {/* ── Tool action bar ── */}
+        {currentTool && (
+          <div className="glass-card px-4 sm:px-6 py-4 flex flex-wrap items-center gap-3 md:gap-4">
+            {/* Tool identity */}
+            <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${currentCat?.color ?? "text-brand-purple"}`}
+              style={{background:"var(--bg-elevated)"}}>
+              {currentTool.icon}
+            </div>
+            <div className="min-w-0 flex-shrink-0">
+              <p className="text-sm font-bold text-content-primary">{currentTool.label}</p>
+              <p className="text-xs text-content-muted mt-0.5 max-w-[220px] sm:max-w-xs truncate">{currentTool.description}</p>
             </div>
 
-            {/* ── Result ── */}
-            {resultUrl && (
-              <section ref={resultRef} className="flex flex-col gap-6 animate-slide-up">
-                <div className="flex items-center gap-4">
-                  <h2 className="text-xs font-semibold uppercase tracking-widest text-content-subtle shrink-0">Result</h2>
-
-                  {transformScore !== null && (
-                    <div className="flex items-center gap-3 flex-1 min-w-0">
-                      <div className="flex-1 h-2 rounded-full bg-surface-elevated overflow-hidden">
-                        <div
-                          className="h-full rounded-full transition-all duration-700"
-                          style={{
-                            width: `${transformScore}%`,
-                            background: transformScore >= 80 ? "#22c55e" : transformScore >= 65 ? "#f97316" : "#ef4444",
-                          }}
-                        />
-                      </div>
-                      <span className="text-sm font-bold tabular-nums shrink-0"
-                        style={{ color: transformScore >= 80 ? "#22c55e" : transformScore >= 65 ? "#f97316" : "#ef4444" }}>
-                        {transformScore}<span className="text-xs font-medium opacity-70">/99</span>
-                      </span>
-                    </div>
-                  )}
-
-                  <button onClick={handleDownload} className="btn-secondary shrink-0">
-                    <Download className="w-4 h-4" /> Download
-                  </button>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="glass-card p-4 flex flex-col gap-3">
-                    <p className="text-xs font-semibold uppercase tracking-widest text-content-subtle">Original</p>
-                    <div className="rounded-xl overflow-hidden bg-surface-elevated checkerboard">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={previewUrl!} alt="Original" className="w-full h-auto object-contain max-h-[420px]" />
-                    </div>
+            {/* Params */}
+            {currentTool.params?.map(p => (
+              <div key={p.key} className="flex items-center gap-2 flex-shrink-0 bg-surface-elevated border border-surface-border rounded-lg px-3 py-1.5">
+                <span className="text-xs text-content-subtle font-medium">{p.label}</span>
+                {p.type === "select" && (
+                  <CustomSelect
+                    value={String(params[p.key] ?? p.default)}
+                    onChange={v => setParams(prev => ({...prev, [p.key]: v}))}
+                    options={p.options!}
+                  />
+                )}
+                {(p.type === "slider" || p.type === "slider-float") && (
+                  <div className="flex items-center gap-2">
+                    <input type="range" min={p.min} max={p.max} step={p.step}
+                      value={Number(params[p.key] ?? p.default)}
+                      onChange={e => setParams(prev => ({...prev, [p.key]: p.type === "slider-float" ? parseFloat(e.target.value) : parseInt(e.target.value, 10)}))}
+                      className="accent-brand-purple w-24" />
+                    <span className="text-xs font-mono text-brand-cyan w-8 text-right tabular-nums">{params[p.key] ?? p.default}</span>
                   </div>
-                  <div className="glass-card p-4 flex flex-col gap-3">
-                    <div className="flex items-center justify-between">
-                      <p className="text-xs font-semibold uppercase tracking-widest text-content-subtle">Processed</p>
-                      <span className={`text-xs font-medium ${currentCat?.color ?? "text-brand-cyan"}`}>{currentTool?.label}</span>
-                    </div>
-                    <div className="rounded-xl overflow-hidden bg-surface-elevated checkerboard">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={resultUrl} alt="Result" className="w-full h-auto object-contain max-h-[420px]" />
-                    </div>
-                  </div>
-                </div>
-              </section>
+                )}
+              </div>
+            ))}
+
+            <div className="flex-1" />
+
+            {globalError && (
+              <div className="flex items-center gap-2 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-1.5">
+                <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                <span className="max-w-[180px] truncate">{globalError}</span>
+                <button onClick={() => setGlobalError(null)} className="ml-1 hover:opacity-70"><X className="w-3.5 h-3.5" /></button>
+              </div>
             )}
-          </div>
-        </div>
-      </main>
 
-      <footer className="relative border-t border-surface-border mt-8">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 flex items-center justify-between text-sm text-content-subtle">
-          <span>No data stored · No cloud processing · 100% on-device</span>
-          <span className="gradient-text font-semibold">PixelForge</span>
-        </div>
-      </footer>
+            {/* Format */}
+            <div className="flex items-center gap-2 bg-surface-elevated border border-surface-border rounded-lg px-3 py-1.5">
+              <span className="text-xs text-content-subtle">Format</span>
+              <CustomSelect
+                value={selectedFormat}
+                onChange={setSelectedFormat}
+                options={FORMATS.map(f => ({ label: f.label, value: f.ext }))}
+              />
+            </div>
+
+            {doneCount > 1 && (
+              <button onClick={downloadAllZip}
+                className="flex items-center gap-2 bg-surface-elevated hover:bg-surface-card border border-surface-border rounded-xl px-4 py-2 text-sm font-medium text-content-secondary hover:text-content-primary transition-all">
+                <Download className="w-4 h-4" /> ZIP ({doneCount})
+              </button>
+            )}
+
+            <button onClick={processAll}
+              disabled={files.length === 0 || isProcessingAll || files.every(e => e.status === "done")}
+              className="btn-primary px-6 py-2.5 text-sm font-semibold rounded-xl disabled:opacity-40 disabled:cursor-not-allowed">
+              {isProcessingAll
+                ? <><Loader2 className="w-4 h-4 animate-spin" /> Processing…</>
+                : <><span className="mr-1">{currentTool.icon}</span>Run{files.length > 1 ? ` All (${files.length})` : ""}</>}
+            </button>
+          </div>
+        )}
+
+        {/* ── Upload section ── */}
+        <section className="space-y-4">
+          {/* Drop zone */}
+          <div onDrop={handleDrop} onDragOver={handleDragOver} onDragLeave={handleDragLeave}
+            onClick={() => fileInputRef.current?.click()}
+            className={`relative rounded-2xl border-2 border-dashed p-8 sm:p-12 flex flex-col items-center justify-center gap-4 cursor-pointer transition-all duration-300 group ${
+              isDragOver
+                ? "border-brand-purple bg-brand-purple/10 scale-[1.01]"
+                : "border-surface-border hover:border-brand-purple/50 hover:bg-brand-purple/5"}`}>
+            <div className={`w-16 h-16 rounded-2xl flex items-center justify-center transition-all duration-300 ${isDragOver ? "bg-brand-purple/20 scale-110" : "bg-surface-elevated group-hover:bg-surface-card"}`}>
+              <Upload className={`w-7 h-7 transition-colors ${isDragOver ? "text-brand-purple" : "text-content-muted group-hover:text-content-secondary"}`} />
+            </div>
+            <div className="text-center">
+              <p className="text-base font-semibold text-content-secondary group-hover:text-content-primary transition-colors">
+                Drop images here, or <span className="text-brand-purple">click to browse</span>
+              </p>
+              <p className="text-sm text-content-muted mt-1">Multiple files supported · JPEG, PNG, WebP, AVIF · Max 20 MB each</p>
+            </div>
+            {files.length > 0 && (
+              <div className="flex items-center gap-2 text-xs text-content-muted bg-surface-elevated px-3 py-1.5 rounded-full border border-surface-border">
+                <Plus className="w-3 h-3" /> Add more images
+              </div>
+            )}
+            <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={handleFileChange} />
+          </div>
+
+          {/* Mask brush controls */}
+          {currentTool?.maskTool && files.length > 0 && (
+            <div className="glass-card px-4 py-3 flex flex-wrap items-center gap-3">
+              <Brush className="w-4 h-4 text-brand-purple flex-shrink-0" />
+              <span className="text-sm font-medium text-content-primary">Paint to select</span>
+              <div className="flex items-center gap-2 bg-surface-elevated border border-surface-border rounded-lg px-3 py-1.5">
+                <span className="text-xs text-content-subtle">Brush size</span>
+                <input type="range" min={8} max={80} value={brushSize} onChange={e => setBrushSize(+e.target.value)} className="accent-brand-purple w-24" />
+                <span className="text-xs font-mono text-brand-cyan w-6 tabular-nums">{brushSize}</span>
+              </div>
+              <button onClick={clearMask} className="flex items-center gap-1.5 text-xs text-content-muted hover:text-content-primary border border-surface-border bg-surface-elevated hover:bg-surface-card px-3 py-1.5 rounded-lg transition-all">
+                <Eraser className="w-3.5 h-3.5" /> Clear mask
+              </button>
+              <p className="text-xs text-content-muted ml-auto hidden sm:block">Paint red over the object, then click Run.</p>
+            </div>
+          )}
+
+          {/* File grid */}
+          {files.length > 0 && (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8 gap-3">
+              {files.map((entry, idx) => (
+                <div key={entry.id} className={`relative rounded-xl overflow-hidden border transition-all ${
+                  entry.status === "done" ? "border-green-500/40" : entry.status === "error" ? "border-red-500/40" : entry.status === "processing" ? "border-brand-purple/60 ring-2 ring-brand-purple/20" : "border-surface-border"
+                } bg-surface-elevated group`}>
+                  <div className="aspect-square relative">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img ref={idx === 0 ? imgPreviewRef : undefined}
+                      src={entry.previewUrl} alt={entry.file.name}
+                      className="w-full h-full object-cover"
+                      onLoad={e => { if (idx === 0 && maskCanvasRef.current) { maskCanvasRef.current.width = e.currentTarget.naturalWidth; maskCanvasRef.current.height = e.currentTarget.naturalHeight; }}} />
+                    {/* Mask canvas for first file */}
+                    {currentTool?.maskTool && idx === 0 && (
+                      <canvas ref={maskCanvasRef} className="absolute inset-0 w-full h-full" style={{cursor:"crosshair"}}
+                        onMouseDown={e => { setIsDrawingMask(true); paintMask(e); }}
+                        onMouseMove={e => { if (isDrawingMask) paintMask(e); }}
+                        onMouseUp={() => setIsDrawingMask(false)} onMouseLeave={() => setIsDrawingMask(false)}
+                        onTouchStart={e => { e.preventDefault(); setIsDrawingMask(true); paintMask(e); }}
+                        onTouchMove={e => { e.preventDefault(); if (isDrawingMask) paintMask(e); }}
+                        onTouchEnd={() => setIsDrawingMask(false)} />
+                    )}
+                    {/* Status overlay */}
+                    {entry.status === "processing" && (
+                      <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
+                        <Loader2 className="w-6 h-6 text-brand-purple animate-spin" />
+                      </div>
+                    )}
+                    {entry.status === "done" && (
+                      <div className="absolute top-1.5 left-1.5">
+                        <CheckCircle2 className="w-4 h-4 text-green-400 drop-shadow" />
+                      </div>
+                    )}
+                    {entry.status === "error" && (
+                      <div className="absolute inset-0 bg-red-900/40 flex items-center justify-center">
+                        <AlertCircle className="w-5 h-5 text-red-400" />
+                      </div>
+                    )}
+                    {/* Remove button */}
+                    <button onClick={() => removeEntry(entry.id)}
+                      className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full bg-black/60 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500">
+                      <X className="w-3 h-3" />
+                    </button>
+                    {/* Download on hover for done */}
+                    {entry.status === "done" && (
+                      <button onClick={() => downloadEntry(entry)}
+                        className="absolute bottom-1.5 right-1.5 w-6 h-6 rounded-full bg-black/60 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-brand-purple">
+                        <Download className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                  <div className="px-2 py-1.5">
+                    <p className="text-xs text-content-secondary truncate font-medium">{entry.file.name}</p>
+                    <div className="flex items-center justify-between mt-0.5">
+                      <p className="text-xs text-content-subtle">{formatBytes(entry.file.size)}</p>
+                      {entry.score !== null && (
+                        <span className="text-xs font-bold tabular-nums"
+                          style={{color: entry.score >= 80 ? "#22c55e" : entry.score >= 65 ? "#f97316" : "#ef4444"}}>
+                          {entry.score}
+                        </span>
+                      )}
+                      {entry.status === "idle" && <Clock className="w-3 h-3 text-content-subtle" />}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* ── Results section ── */}
+        {files.some(e => e.status === "done" && e.resultUrl) && (
+          <section className="space-y-4">
+            <div className="flex items-center gap-3">
+              <h2 className="text-lg font-bold text-content-primary">Results</h2>
+              <span className="text-sm text-content-muted">{doneCount} processed</span>
+              <div className="flex-1 h-px bg-surface-border" />
+            </div>
+
+            <div className="space-y-6">
+              {files.filter(e => e.status === "done" && e.resultUrl).map(entry => {
+                const scoreColor = entry.score !== null
+                  ? entry.score >= 80 ? "#22c55e" : entry.score >= 65 ? "#f97316" : "#ef4444"
+                  : null;
+                return (
+                  <div key={entry.id} className="glass-card overflow-hidden animate-slide-up">
+                    {/* Card header */}
+                    <div className="flex items-center gap-3 px-5 py-3.5 border-b border-surface-border">
+                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${currentCat?.color ?? "text-brand-purple"}`}
+                        style={{background:"var(--bg-elevated)"}}>
+                        {currentTool?.icon}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold text-content-primary truncate">{entry.file.name}</p>
+                        <p className="text-xs text-content-muted">{formatBytes(entry.file.size)} · {currentTool?.label}</p>
+                      </div>
+                      {entry.score !== null && scoreColor && (
+                        <div className="flex items-center gap-2.5 flex-shrink-0">
+                          <div className="w-28 h-2 rounded-full bg-surface-elevated overflow-hidden">
+                            <div className="h-full rounded-full transition-all duration-700"
+                              style={{width:`${entry.score}%`, background: scoreColor}} />
+                          </div>
+                          <span className="text-sm font-bold tabular-nums w-10" style={{color: scoreColor}}>
+                            {entry.score}<span className="text-xs font-medium opacity-50">/99</span>
+                          </span>
+                        </div>
+                      )}
+                      <button onClick={() => downloadEntry(entry)}
+                        className="flex items-center gap-2 btn-primary text-sm px-4 py-2 flex-shrink-0">
+                        <Download className="w-4 h-4" /> {selectedFormat.toUpperCase()}
+                      </button>
+                    </div>
+
+                    {/* Before / After 50-50 */}
+                    <div className="grid grid-cols-2 divide-x divide-surface-border">
+                      <div className="relative bg-surface-elevated checkerboard">
+                        <p className="absolute top-3 left-3 z-10 text-xs font-semibold text-white bg-black/50 backdrop-blur-sm px-2.5 py-1 rounded-full">Before</p>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={entry.previewUrl} alt="Before" className="w-full object-contain block" style={{maxHeight:"60vh"}} />
+                      </div>
+                      <div className="relative bg-surface-elevated checkerboard">
+                        <p className="absolute top-3 right-3 z-10 text-xs font-semibold text-white bg-black/50 backdrop-blur-sm px-2.5 py-1 rounded-full">After</p>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={entry.resultUrl!} alt="After" className="w-full object-contain block" style={{maxHeight:"60vh"}} />
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
+        {/* ── Empty state ── */}
+        {files.length === 0 && (
+          <div className="flex flex-col items-center justify-center py-20 gap-4 text-content-muted">
+            <div className="w-20 h-20 rounded-3xl bg-surface-elevated border border-surface-border flex items-center justify-center">
+              <ImageIcon className="w-9 h-9 opacity-40" />
+            </div>
+            <p className="text-base font-medium text-content-secondary">Upload images to get started</p>
+            <p className="text-sm text-content-muted">Choose a tool above, drop your photos, and hit Run</p>
+          </div>
+        )}
+
+        <div className="h-8" />
+      </main>
     </div>
   );
 }

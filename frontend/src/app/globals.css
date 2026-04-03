@@ -59,6 +59,9 @@ body {
 ::-webkit-scrollbar-thumb    { background: var(--color-border); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--purple); }
 
+.scrollbar-hide { scrollbar-width: none; -ms-overflow-style: none; }
+.scrollbar-hide::-webkit-scrollbar { display: none; }
+
 /* ── Text selection ─────────────────────────────────────────────────────── */
 ::selection {
   background-color: rgba(124, 58, 237, 0.30);
